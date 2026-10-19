@@ -1,4 +1,16 @@
 import { CancelSubscriptionModal } from './CancelSubscriptionModal'
+import { ManagePauseModal } from './ManagePauseModal'
+import { PauseSubscriptionModal } from './PauseSubscriptionModal'
+
+export type PauseInfo = {
+  pauseScheduled: boolean
+  pauseAt: string
+  pauseAtTimestamp: number | null
+  resumeAt: string | null
+  resumeAtTimestamp: number | null
+  resumeStatus: string | null
+  errorMessage: string | null
+}
 
 export type SubscriptionRow = {
   id: string
@@ -7,16 +19,23 @@ export type SubscriptionRow = {
   formattedAmount: string
   nextBillingDate: string
   cancelAtPeriodEnd: boolean
+  canPause: boolean
+  pause: PauseInfo | null
+  customerId: string
   path: string
   primaryColor: string | null
 }
 
 function subscriptionStatusBadge(
   status: string,
-  cancelAtPeriodEnd: boolean
+  cancelAtPeriodEnd: boolean,
+  pause: PauseInfo | null
 ): { label: string; classes: string } {
   if (cancelAtPeriodEnd) {
     return { label: 'Canceling', classes: 'bg-orange-100 text-orange-700' }
+  }
+  if (pause?.pauseScheduled) {
+    return { label: 'Pause scheduled', classes: 'bg-yellow-100 text-yellow-700' }
   }
   switch (status) {
     case 'active':
@@ -34,6 +53,26 @@ function subscriptionStatusBadge(
     default:
       return { label: status, classes: 'bg-zinc-100 text-zinc-500' }
   }
+}
+
+function subscriptionSubtitle(sub: SubscriptionRow): string {
+  const { pause } = sub
+  if (pause?.resumeStatus === 'pending' || pause?.resumeStatus === 'requires_action') {
+    return 'Resume awaiting payment'
+  }
+  if (pause?.pauseScheduled) {
+    return pause.resumeAt
+      ? `Pauses on ${pause.pauseAt} · Resumes on ${pause.resumeAt}`
+      : `Pauses on ${pause.pauseAt}`
+  }
+  if (sub.status === 'paused') {
+    return pause?.resumeAt
+      ? `Paused · Resumes on ${pause.resumeAt}`
+      : 'Paused until you resume'
+  }
+  return sub.cancelAtPeriodEnd
+    ? `Cancels on ${sub.nextBillingDate}`
+    : `Next billing on ${sub.nextBillingDate}`
 }
 
 const ACTIONABLE_STATUSES = new Set(['active', 'trialing', 'past_due', 'unpaid'])
@@ -55,7 +94,7 @@ export function SubscriptionsSection({
 
       <div className="divide-y divide-zinc-100">
         {subscriptions.map((sub) => {
-          const badge = subscriptionStatusBadge(sub.status, sub.cancelAtPeriodEnd)
+          const badge = subscriptionStatusBadge(sub.status, sub.cancelAtPeriodEnd, sub.pause)
           const isActionable = ACTIONABLE_STATUSES.has(sub.status) && !sub.cancelAtPeriodEnd
 
           return (
@@ -71,20 +110,37 @@ export function SubscriptionsSection({
                 </div>
                 <p className="text-sm text-zinc-500">{sub.formattedAmount}</p>
                 <p className="text-xs text-zinc-400 mt-1">
-                  {sub.cancelAtPeriodEnd
-                    ? `Cancels on ${sub.nextBillingDate}`
-                    : `Next billing on ${sub.nextBillingDate}`}
+                  {subscriptionSubtitle(sub)}
                 </p>
               </div>
 
-              {isActionable && (
-                <CancelSubscriptionModal
-                  subscriptionId={sub.id}
-                  productName={sub.productName}
-                  path={sub.path}
-                  primaryColor={sub.primaryColor}
-                />
-              )}
+              <div className="flex items-center gap-4 shrink-0">
+                {sub.canPause && (
+                  <PauseSubscriptionModal
+                    subscriptionId={sub.id}
+                    customerId={sub.customerId}
+                    productName={sub.productName}
+                    path={sub.path}
+                  />
+                )}
+                {sub.pause && (
+                  <ManagePauseModal
+                    subscriptionId={sub.id}
+                    customerId={sub.customerId}
+                    productName={sub.productName}
+                    path={sub.path}
+                    pause={sub.pause}
+                  />
+                )}
+                {isActionable && (
+                  <CancelSubscriptionModal
+                    subscriptionId={sub.id}
+                    productName={sub.productName}
+                    path={sub.path}
+                    primaryColor={sub.primaryColor}
+                  />
+                )}
+              </div>
             </div>
           )
         })}
