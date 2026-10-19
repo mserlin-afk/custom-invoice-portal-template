@@ -1,7 +1,11 @@
 import { notFound } from "next/navigation";
 import Stripe from "stripe";
 import { stripe } from "@/lib/stripe";
-import { SubscriptionsSection, type SubscriptionRow } from "./SubscriptionsSection";
+import {
+  SubscriptionsSection,
+  type PauseInfo,
+  type SubscriptionRow,
+} from "./SubscriptionsSection";
 import { PaymentMethodsSection, type PaymentMethodData } from "./PaymentMethodsSection";
 import { BillingInfoSection } from "./BillingInfoSection";
 import type { BillingInfoData } from "./BillingInfoForm";
@@ -76,6 +80,62 @@ function getProductName(
   return item.price.nickname ?? "Subscription";
 }
 
+function getActivePauseSchedule(
+  sub: Stripe.Subscription
+): Stripe.SubscriptionSchedule.PauseSchedule | null {
+  const schedule = sub.schedule as Stripe.SubscriptionSchedule | null;
+  const pauseSchedule = schedule?.pause_schedules?.[0];
+  if (!pauseSchedule) return null;
+  // A pause that already ran its course doesn't need managing anymore
+  const done =
+    pauseSchedule.pause.status.type === "succeeded" &&
+    pauseSchedule.resume?.status.type === "succeeded";
+  return done ? null : pauseSchedule;
+}
+
+function buildPauseInfo(sub: Stripe.Subscription): PauseInfo | null {
+  const pauseSchedule = getActivePauseSchedule(sub);
+  if (!pauseSchedule) {
+    // Paused without a schedule (e.g. from the Dashboard): no resume date yet
+    return sub.status === "paused"
+      ? {
+          pauseScheduled: false,
+          pauseAt: formatDate(sub.status_details?.paused?.transitioned_at),
+          pauseAtTimestamp: sub.status_details?.paused?.transitioned_at ?? null,
+          resumeAt: null,
+          resumeAtTimestamp: null,
+          resumeStatus: null,
+          errorMessage: null,
+        }
+      : null;
+  }
+  const { pause, resume } = pauseSchedule;
+  return {
+    pauseScheduled: pause.status.type === "scheduled",
+    pauseAt: formatDate(pause.pause_at),
+    pauseAtTimestamp: pause.pause_at,
+    resumeAt: resume ? formatDate(resume.resume_at) : null,
+    resumeAtTimestamp: resume?.resume_at ?? null,
+    resumeStatus: resume?.status.type ?? null,
+    errorMessage:
+      pause.status.error?.message ?? resume?.status.error?.message ?? null,
+  };
+}
+
+// Mirrors Stripe's documented conditions for pausing a subscription
+function canPause(sub: Stripe.Subscription): boolean {
+  const now = Math.floor(Date.now() / 1000);
+  return (
+    (sub.status === "active" || sub.status === "past_due") &&
+    sub.collection_method === "charge_automatically" &&
+    sub.billing_mode.type === "flexible" &&
+    !(sub.trial_end && sub.trial_end > now) &&
+    !sub.cancel_at_period_end &&
+    !sub.cancel_at &&
+    getActivePauseSchedule(sub) === null
+  );
+}
+
 // --- Page ---
 
 type Props = {
@@ -104,7 +164,9 @@ export default async function CustomerInvoicesPage({ params }: Props) {
     stripe.subscriptions.list({
       customer: cus_id,
       status: "all",
-limit: 20,
+      limit: 20,
+      // Pause schedules live on the subscription schedule
+      expand: ["data.schedule"],
     }),
     stripe.paymentMethods.list({ customer: cus_id, limit: 20 }),
   ]);
@@ -198,6 +260,9 @@ limit: 20,
     formattedAmount: formatSubscriptionAmount(sub),
     nextBillingDate: formatDate(sub.items.data[0]?.current_period_end),
     cancelAtPeriodEnd: sub.cancel_at_period_end,
+    canPause: canPause(sub),
+    pause: buildPauseInfo(sub),
+    customerId: cus_id,
     path,
     primaryColor,
   }));
